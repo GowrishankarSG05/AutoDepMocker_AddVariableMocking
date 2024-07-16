@@ -87,6 +87,12 @@ void GeneratorUtilities::writeToFile(const std::string& fileName, const std::str
     file.close();
 }
 
+void GeneratorUtilities::writeToFileOverWrite(const std::string& fileName, const std::string& content) {
+    std::ofstream file(getOutFileName(fileName), std::ios::trunc);
+    file << content;
+    file.close();
+}
+
 std::string GeneratorUtilities::addIncludeGuard(const std::string& guardName) {
     std::string mockClass;
     // Add fileInfo

@@ -34,6 +34,7 @@ void CMockGenerator::constructWrapperFunction(const std::string& fileName, const
     }
 
     // Add wrapper class
+    mockClass.append(PredefinedMockData::newLine);
     mockClass.append(PredefinedMockData::class_);
     mockClass.append(getClassNameFromFileName(convertDashToUnderScore(getfileNameFromPath(fileName))));
     mockClass.append(PredefinedMockData::aSpace);

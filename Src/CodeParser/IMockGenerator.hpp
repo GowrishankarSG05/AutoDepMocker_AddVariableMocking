@@ -60,6 +60,14 @@ public:
     virtual void constructCFunction(const std::string& fileName, const std::vector<MethodInfo>& methodsInfo) = 0;
 
     /**
+     * @brief Write field declartion to mock file
+     * @param fileNme: The mock file name
+     * @param fieldInfo: list of field information
+     * @example struct foo, int x, char y
+     */
+    virtual void constructFieldDeclation(const std::string& fileName, const std::list<VariableInfoHierarchy>& fieldInfo) = 0;
+
+    /**
      * @brief finalize mocking process
      *        Generator can utilize this for finalizing the mock class writting
      */

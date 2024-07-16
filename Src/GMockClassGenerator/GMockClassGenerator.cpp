@@ -37,6 +37,10 @@ void GMockClassGenerator::constructCFunction(const std::string& fileName, const 
     m_cMockGenerator.constructFunction(fileName, methodsInfo);
 }
 
+void GMockClassGenerator::constructFieldDeclation(const std::string& fileName, const std::list<VariableInfoHierarchy>& fieldInfo) {
+    m_fieldDeclGenerator.constructFieldDeclaration(fileName, fieldInfo);
+}
+
 void GMockClassGenerator::finalizeMocking() {
     // finishMocking is just adding #endif at end of the file located in ./GeneratedMocks folder.
     // So finishMocking() can be called from any generator objects

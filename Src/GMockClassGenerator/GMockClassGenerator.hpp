@@ -25,6 +25,7 @@
 #include "CPPMockGenerator.hpp"
 #include "EnumGenerator.hpp"
 #include "CMockGenerator.hpp"
+#include "FieldDeclarationGenerator.hpp"
 
 class GMockClassGenerator : public IMockGenerator {
 public:
@@ -39,6 +40,7 @@ public:
     void constructEnum(const std::string& fileName, const std::vector<enumProperties>& enumProp) override;
     void constructClass(const ClassInfo& classInfo, const std::vector<MethodInfo>& calleeInfo) override;
     void constructCFunction(const std::string& fileName, const std::vector<MethodInfo>& methodsInfo) override;
+    void constructFieldDeclation(const std::string& fileName, const std::list<VariableInfoHierarchy>& fieldInfo) override;
     void finalizeMocking() override;
 
 private:
@@ -46,6 +48,7 @@ private:
     CPPMockGenerator m_cppMockgenerator;
     EnumGenerator m_enumGenerator;
     CMockGenerator m_cMockGenerator;
+    FieldDeclarationGenerator m_fieldDeclGenerator;
 
 };
 

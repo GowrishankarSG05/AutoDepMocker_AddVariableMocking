@@ -45,16 +45,33 @@ public:
 
     ~CustomASTVisitor();
 
+    /** Visitor for variable declaration
+     * @brief: This gets called for each variable declaration
+     *           Example: Foo object; <- Here object is variable declaration
+     *         Parse and get information about variable declaration and store it to generate mock class
+     * @arg: fieldDecl: Contains information about variable declaration
+     * @return: bool: True on success, False on failure
+    */ 
+    bool VisitVarDecl(clang::VarDecl *variableDecl);
+
     /** Visitor for declaration reference expression
      * @brief: This gets called for each declaration reference expression
      *           Example: catch(ExceptionClass obj) <- Here ExceptionClass is reference expression
      *         Parse and get information about the declaration and store it to generate mock class
-     *         Current version supports only parsing c and c++ scoped enums
-     * @note:  Parsing c and c++ class declaration support is yet to be added
      * @arg declRefExpr: Contains information about the declaraton expression
      * @return bool: True on success, False on failure
      */
     bool VisitDeclRefExpr(const clang::DeclRefExpr* declRefExpr);
+
+    /***
+     * Visitor for member expression
+     * @brief: This gets called for each member expression
+     *          Example; FooObj.x = 10; <- member expression
+     *         Parse and get member and parent information to generate mock class
+     * @arg: memberExpr: Contains details about the member expression
+     * @return bool: True on success, false on failure
+     */
+    bool VisitMemberExpr(const clang::MemberExpr* memberExpr);
 
     /** Visitor for declaration reference expression
      * @brief: This gets called for each c and c++ method call present in the AST
@@ -78,6 +95,9 @@ public:
     // Getter function for retrieving include files information. Call this once parsing is completely done
     const IncludeInfo& getIncludeInfo();
 
+    // Getter function for variable information container
+    const std::map<std::string/*fileName*/, std::list<VariableInfoHierarchy>>& getVariableInfoContainer();
+
 private:
 
     // Parse C++ member expression
@@ -96,6 +116,14 @@ private:
     // Supports C++ method, operator and method overloading and template class
     void StoreClassAndMethodInfo(clang::CXXMethodDecl* methodDecl, bool operatorOverloadingType = false);
 
+    // Parse parent information of the given declaration
+    // Parent hierarchy information is fetched till certain level
+    void processParentInfoOfDeclaration(clang::DeclContext* parentDeclContext, const std::string& inputChildInfo,
+                                        const std::string& fileName);
+
+    // Store variable declaration information based on parent, child relation
+    void storeVariableDeclationInfo(const std::string& childInfo, const std::string& parentInfo, const std::string& fileName, const bool finalEntry = false);
+
     // Function to workaround _Bool types
     // Clang reports bool type as _Bool. So convert _Bool to bool
     std::string checkBool(const std::string typeName);
@@ -110,6 +138,11 @@ private:
     //             from a wrapper file(ex: string -> basic_string.h)
     //             WorkAround: Include bits/stdc++.h to blindly include everything
     std::optional<std::string> getFileNameFromTypeDeclaration(clang::Type* type);
+
+    // Get parent information of clang::Type
+    // Eample -> class Foo { class Bar {};};
+    //        -> This function is used to retrieve Foo declaration from Type Bar 
+    clang::DeclContext* getParentOfType(clang::Type* type);
 
     // Utility function to remove "/usr/include" prefix
     // Input: /usr/include/Header.hpp
@@ -135,6 +168,16 @@ private:
 
     std::string getfileNameFromPath(const std::string& filePath);
 
+    // Qualified type name - struct ns::foo::bar::buz
+    // Return - struct buz
+    std::string getTypeNameFromQualifiedTypeName(const std::string& qualifiedTypeName);
+
+    // Store given variable information list into m_variableInfoContainerMap
+    void storeListInfoContainer(const std::string& fileName, const std::vector<std::string>& varInfoList);
+
+    // Implements core logic of storing variable information in m_variableInfoContainerMap
+    void storeListInfoContainerCore(const std::vector<std::string>& varInfoList, VariableInfoHierarchy& container, const bool newEntry = false);
+
     // To obtain file-related information(Example: filename, location) utilize Clang ASTContext and SourceManager
     clang::ASTContext& m_ASTContext;
     clang::SourceManager& m_sourceManager;
@@ -151,6 +194,12 @@ private:
 
     // C and C++ Enum mock information
     EnumInfo m_enumInfo; // fileName, Enum Properties
+
+    // List of variable information in the form of hierarchy
+    std::list<std::string> m_variableInfo;
+
+    // List of sequence of variable information corresponding to file
+    std::map<std::string/*fileName*/, std::list<VariableInfoHierarchy>> m_variableInfoContainerMap;
 
     MethodInfo calleeData = {};
     std::vector<std::string> notTobeMockedFiles = {"include/c++/", "include/x86_64-linux-gnu/c++"};

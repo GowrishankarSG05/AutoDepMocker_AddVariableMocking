@@ -46,6 +46,7 @@ struct MethodInfo {
 struct ClassInfo {
     std::string name;
     std::string fullName;
+    std::string declKindName = "class ";
     std::string filename;
     std::vector<std::string> namespaceInfo;
     bool isTemplateClass = false;
@@ -67,5 +68,11 @@ struct enumProperties {
 };
 
 using EnumInfo = std::map<std::string/*fileName*/, std::vector<enumProperties>>;
+
+// Contains chain of variable information
+struct VariableInfoHierarchy {
+    std::string variableInfo = {};
+    std::list<VariableInfoHierarchy> variableInfoHierarchyList = {};
+};
 
 #endif // CUSTOM_TYPES_HPP_

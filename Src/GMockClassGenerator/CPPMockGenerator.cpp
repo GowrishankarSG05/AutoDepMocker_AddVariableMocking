@@ -36,7 +36,7 @@ void CPPMockGenerator::constructClass(const ClassInfo& classInfo, const std::vec
         mockClass.append(PredefinedMockData::newLine);
         for(int i=0; i<classInfo.namespaceInfo.size(); i++) {
             mockClass.append(PredefinedMockData::nameSpace); // namespace
-            mockClass.append(classInfo.namespaceInfo[i]); // namespace Name
+            mockClass.append(classInfo.namespaceInfo[i] + PredefinedMockData::aSpace); // namespace Name
             mockClass.append(PredefinedMockData::openBraces); // namespace Name{
             mockClass.append(PredefinedMockData::newLine);
         }
@@ -58,7 +58,7 @@ void CPPMockGenerator::constructClass(const ClassInfo& classInfo, const std::vec
 
     // Add class
     mockClass.append(PredefinedMockData::newLine);
-    mockClass.append(PredefinedMockData::class_);
+    mockClass.append(classInfo.declKindName);
     mockClass.append(classInfo.name);
     mockClass.append(PredefinedMockData::aSpace);
     mockClass.append(PredefinedMockData::openBraces);

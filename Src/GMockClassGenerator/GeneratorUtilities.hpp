@@ -55,6 +55,8 @@ protected:
 
     void writeToFile(const std::string& fileName, const std::string& content);
 
+    void writeToFileOverWrite(const std::string& fileName, const std::string& content);
+
     std::string addIncludeGuard(const std::string& guardName);
 
     std::string getClassNameFromFileName(const std::string& fileName);

@@ -1,0 +1,11 @@
+# vs code files
+.vscode
+
+# build directory
+build/
+
+# log file
+AutoDepMocker.log
+
+# vi swp files
+*.swp

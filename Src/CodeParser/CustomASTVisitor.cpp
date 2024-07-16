@@ -44,8 +44,54 @@ CustomASTVisitor::~CustomASTVisitor() {
     logFile.close();
 }
 
+// Ignore buildin types, c++ std types and types which are defined in same source file
+// Parse and mock only types which are defined in externel file
+bool CustomASTVisitor::VisitVarDecl(clang::VarDecl* variableDecl)
+{
+    logFile << "INFO: VisitVarDecl: " << variableDecl->getDeclName().getAsString() << std::endl;
+
+    // Ignore buildin types
+    if(variableDecl->getType()->isBuiltinType()) {
+        logFile << "INFO: buildin type found, Skipping" << std::endl;
+        return true;
+    }
+
+    // Ignore c++ std types
+    if(variableDecl->isInStdNamespace()) {
+        logFile << "INFO: c++ std type found, Skipping" << std::endl;
+        return true;
+    }
+
+    // Skip if the declaration origin is from the same source file
+    const std::string sourcefileName = getfileNameFromPath(
+                m_sourceManager.getFileEntryForID(m_sourceManager.getMainFileID())->getName());
+    const auto declFileName = getFileNameFromTypeDeclaration(const_cast<clang::Type*>(
+                variableDecl->getType().getTypePtrOrNull())).value_or(std::string());
+
+    const auto declFileNameStripped = getfileNameFromPath(declFileName);
+
+    if(declFileNameStripped.empty()) {
+        logFile << "WARN: Unable to get declaration file name, Skipping" << std::endl;
+        return true;
+    }
+    if(sourcefileName == declFileNameStripped) {
+        logFile << "INFO: Declaration origin is source file, Skipping" << std::endl;
+        return true;
+    }
+
+    // Get declaration name
+    std::string childInfo = getTypeNameFromQualifiedTypeName(
+                                      variableDecl->getType().getDesugaredType(m_ASTContext).getAsString());
+
+    // Get parent of above declaration, required to build complete information
+    auto parentDeclContext = getParentOfType(const_cast<clang::Type*>(variableDecl->getType().getTypePtrOrNull()));
+
+    // Get complete parent information for certain level and store it in container
+    processParentInfoOfDeclaration(parentDeclContext, childInfo, declFileNameStripped);
+    return true;
+}
+
 // It supports parsing C/C++ Enums
-// @ToDo: Add support for C++, C declaration
 bool CustomASTVisitor::VisitDeclRefExpr(const clang::DeclRefExpr* declRefExpr) {
 
     logFile << "INFO: VisitDeclRefExpr: " << declRefExpr->getNameInfo().getAsString() << std::endl;
@@ -83,6 +129,35 @@ bool CustomASTVisitor::VisitDeclRefExpr(const clang::DeclRefExpr* declRefExpr) {
     }
 
     return true; // Parse only C/C++ Enum types
+}
+
+bool CustomASTVisitor::VisitMemberExpr(const clang::MemberExpr* memberExpr) {
+    logFile << "INFO: VisitMemberExpr, member name: " << memberExpr->getMemberNameInfo().getAsString() << std::endl;
+    logFile << "INFO: VisitMemberExpr, member type: " << memberExpr->getMemberDecl()->getType().getAsString() << std::endl;
+
+    // Skip member function expression
+    if(clang::isa<clang::FunctionDecl>(memberExpr->getMemberDecl())) {
+        return true; // nothing to do
+    }
+
+    // Skip if the declaration origin is from the same source file
+    const std::string sourcefileName = getfileNameFromPath(
+                m_sourceManager.getFileEntryForID(m_sourceManager.getMainFileID())->getName());
+
+    clang::ValueDecl* valueDecl = memberExpr->getMemberDecl();
+    const std::string declFileNameStripped = getfileNameFromPath(getStrippedFilePath(
+                                        m_sourceManager.getFilename(valueDecl->getLocation()).data()));
+
+    if(sourcefileName == declFileNameStripped) {
+        logFile << "INFO: Declaration origin is source file, Skipping" << std::endl;
+        return true;
+    }
+
+    const std::string childInfo = memberExpr->getMemberDecl()->getType().getAsString() + 
+                    PredefinedMockData::aSpace + memberExpr->getMemberNameInfo().getAsString();
+    processParentInfoOfDeclaration(valueDecl->getDeclContext(), childInfo, declFileNameStripped);
+
+    return true;
 }
 
 // This gets called first for all callExpression
@@ -366,6 +441,13 @@ void CustomASTVisitor::StoreClassAndMethodInfo(clang::CXXMethodDecl* methodDecl,
     ClassInfo classInfo = {};
     classInfo.name = methodDecl->getParent()->getNameAsString();
     classInfo.fullName = methodDecl->getParent()->getQualifiedNameAsString(); // Useless
+    
+    // Default declaration kind name is "class"
+    if(methodDecl->getParent()->isStruct()) {
+        classInfo.declKindName = PredefinedMockData::struct_;
+    } else if(methodDecl->getParent()->isUnion()) {
+        classInfo.declKindName = PredefinedMockData::union_;
+    }
 
     // Read Namespace information
     const clang::DeclContext* declContext = methodDecl->getParent()->getEnclosingNamespaceContext();
@@ -460,6 +542,177 @@ void CustomASTVisitor::StoreClassAndMethodInfo(clang::CXXMethodDecl* methodDecl,
 
     // Finally link callee information with caller
     m_mockCPPMethodInfo[classInfo.name].push_back(methodInfo);
+}
+
+void CustomASTVisitor::processParentInfoOfDeclaration(clang::DeclContext* parentDeclContext, const std::string& inputChildInfo,
+                                        const std::string& fileName) {
+
+    std::string childInfo = inputChildInfo;
+
+    // Parse until last parent in the hierarchy
+    while(parentDeclContext) {
+        if(clang::isa<clang::RecordDecl>(parentDeclContext)) {
+            clang::NamedDecl* namedDecl = clang::dyn_cast_or_null<clang::NamedDecl>(parentDeclContext);
+            // Get parent name. filename would be same
+            clang::RecordDecl* recordDecl = clang::dyn_cast<clang::RecordDecl>(parentDeclContext);
+            std::string typeString = {};
+            if(recordDecl->isStruct()) {
+                typeString = "struct ";
+            } else if(recordDecl->isClass()) {
+                typeString = "class ";
+            } else if(recordDecl->isUnion()) {
+                typeString = "union ";
+            }
+
+            std::string parentInfo = typeString + namedDecl->getNameAsString();
+            storeVariableDeclationInfo(childInfo, parentInfo, fileName);
+            childInfo = parentInfo;
+            parentDeclContext = parentDeclContext->getParent();
+            continue;
+        } else if(clang::isa<clang::NamespaceDecl>(parentDeclContext)) {
+            // Get namespace information
+            clang::NamespaceDecl* namespaceDecl = clang::dyn_cast<clang::NamespaceDecl>(parentDeclContext);
+            const std::string namespaceName = clang::dyn_cast_or_null<clang::NamedDecl>(parentDeclContext)->getNameAsString();
+            std::string parentInfo = "namespace " + namespaceName;
+            storeVariableDeclationInfo(childInfo, parentInfo, fileName);
+            childInfo = parentInfo;
+            parentDeclContext = parentDeclContext->getParent();
+            continue;
+        } else {
+            // Last node in the hierachy
+            storeVariableDeclationInfo(childInfo, {}, fileName, true /*final entry, no parent*/);
+            return;
+        }
+    }
+}
+
+void CustomASTVisitor::storeVariableDeclationInfo(const std::string& childInfo, const std::string& parentInfo, const std::string& fileName, const bool finalEntry) {
+    logFile << "INFO: Storing variable, child: " << childInfo << " parent " << parentInfo << std::endl;
+
+    std::string parentInfoLocal = parentInfo;
+    std::string childInfoLocal = childInfo;
+
+    bool childPresent = false;
+
+    // Set might have child information already, so traverse to find out the element and only update parent link
+    if(m_variableInfo.size()) {
+        for(auto& eachElement : m_variableInfo) {
+            if(eachElement == childInfoLocal) {
+                if(finalEntry) {
+                    break; // nothing to update
+                }
+                childPresent = true;
+                break;
+            }
+        }
+    }
+
+    if(parentInfo == "") {// Probably last entry
+        if(m_variableInfo.size()) {
+            const std::vector<std::string> varInfoList(m_variableInfo.begin(), m_variableInfo.end());
+            storeListInfoContainer(fileName, varInfoList);
+        } else { // Only child present and no parent
+            std::vector<std::string> varInfoList = {childInfo};
+            storeListInfoContainer(fileName, varInfoList); // Organize this
+        }
+        // Flush out m_variableInfo
+        m_variableInfo.clear();
+        return;
+    }
+
+    if(! childPresent) {
+        // Push child first then parent
+        m_variableInfo.push_front(childInfo);
+        m_variableInfo.push_front(parentInfo);
+    } else {
+        m_variableInfo.push_front(parentInfoLocal);
+    }
+}
+
+void CustomASTVisitor::storeListInfoContainerCore(const std::vector<std::string>& varInfoList, 
+                          VariableInfoHierarchy& container, const bool newEntry) {
+
+    VariableInfoHierarchy* current = &container;
+    bool firstRecordInVarInfoList = true;
+    bool firstEntry = true;
+
+    // Example use case:
+    // varInfoList:
+    // namespace foo {
+    //     struct bar {
+    //         int x;
+    //     };
+    //     ...
+    //}
+    // container:
+    // namespace foo -> struct bar
+
+    for (size_t i = 0; i < varInfoList.size(); ++i) {
+        bool found = false;
+        // Check container data against first record of varInfoList (namespace foo -> namespace foo)
+        if(firstRecordInVarInfoList) {
+            if(container.variableInfo == varInfoList[i]) {
+                current = &container;
+                found = true;
+            }
+            firstRecordInVarInfoList = false;
+        } else {
+            // For remaining records (struct bar -> struct bar, ...)
+            for (auto& child : current->variableInfoHierarchyList) {
+                if (child.variableInfo == varInfoList[i]) {
+                    current = &child;
+                    found = true;
+                    break;
+                } else {
+                  continue;
+                }
+            }
+        }
+
+        if (! found) {
+            // Add variable info to current branch as current branch is newly created and not present yet in container
+            // Later storeListInfoContainer will add current branch into container
+            if(firstEntry && newEntry) {
+                current->variableInfo = varInfoList[i];
+                firstEntry = false;
+            } else {
+                // Here current branch is already present in container, So only
+                // insert the missing part of the sequence starting from here
+                VariableInfoHierarchy insertVarInfo = {};
+                insertVarInfo.variableInfo = varInfoList[i];
+                current->variableInfoHierarchyList.push_back(insertVarInfo);
+                current = &current->variableInfoHierarchyList.back();
+            }
+        }
+    }
+}
+
+void CustomASTVisitor::storeListInfoContainer(const std::string& fileName, const std::vector<std::string>& varInfoList) {
+    // Check for any matches in existing container map
+    // If file entry not exists, create one
+    if(! m_variableInfoContainerMap.count(fileName)) {
+         m_variableInfoContainerMap[fileName] = {};
+         VariableInfoHierarchy newEntryInContainer;
+         storeListInfoContainerCore(varInfoList, newEntryInContainer, true/*new entry*/);
+         m_variableInfoContainerMap[fileName].push_back(newEntryInContainer);
+    } else {
+        // File entry is present in map
+        // Check if parent node is already present or not
+        for(auto& each : m_variableInfoContainerMap[fileName]) {
+            if(varInfoList.size() && (each.variableInfo == *varInfoList.begin())) {
+                // Parent node already exists, pass this
+                storeListInfoContainerCore(varInfoList, each);
+                return;
+            } else {
+                continue;
+            }
+        }
+
+        // Parent node not exists, create one and append in the list
+        VariableInfoHierarchy newEntryInContainer;
+        storeListInfoContainerCore(varInfoList, newEntryInContainer, true/*new entry*/);
+        m_variableInfoContainerMap[fileName].push_back(newEntryInContainer);
+    }
 }
 
 // Workaround to convert _Bool to bool
@@ -588,6 +841,60 @@ std::optional<std::string> CustomASTVisitor::getFileNameFromTypeDeclaration(clan
     return getStrippedFilePath(m_sourceManager.getFilename(tagType->getDecl()->getLocation()).data());
 }
 
+clang::DeclContext* CustomASTVisitor::getParentOfType(clang::Type* type) {
+    if(! type) {
+        logFile << "WARN: Type is empty, Unable to process. Skipping" << std::endl;
+        return nullptr;
+    }
+    if(type->isBuiltinType()) {
+        logFile << "INFO: Build in type found, Skipping" << std::endl;
+        return nullptr;
+    }
+
+    // Type could be pointer, reference or pure type
+    // Below code unwraps pointer and reference type to pure type
+    clang::Type* typePtr = type;
+
+    if(type->isReferenceType()) {
+        const clang::ReferenceType* referType = type->getAs<clang::ReferenceType>();
+        if(! referType) {
+            logFile << "WARN: Unable to get reference type from type" << std::endl;
+            return nullptr;
+        }
+        typePtr = const_cast<clang::Type*>(referType->getPointeeType().getTypePtr());
+        if(! typePtr) {
+            logFile << "WARN: Unable to get type pointer from pointee type" << std::endl;
+            return nullptr;
+        }
+    } else if (type->isPointerType()) {
+        const clang::PointerType* pointerType = type->getAs<clang::PointerType>();
+        if(! pointerType) {
+            logFile << "WARN: Unable to get pointer type from type" << std::endl;
+            return nullptr;
+        }
+        typePtr = const_cast<clang::Type*>(pointerType->getPointeeType().getTypePtr());
+        if(! typePtr) {
+            logFile << "WARN: Unable to get type pointer from pointee type" << std::endl;
+            return nullptr;
+        }
+    }
+
+    // Finally get declaration tagged with type
+    const clang::TagType* tagType = typePtr->getAs<clang::TagType>();
+    if(! tagType) {
+        logFile << "WARN: Unable to get tag type from type pointer" << std::endl;
+        logFile << "WARN: Is in build type: " << typePtr->isBuiltinType() << std::endl;
+        return nullptr;
+    }
+    if(! tagType->getDecl()) {
+        logFile << "WARN: Unable to get declaration from tag type" << std::endl;
+        return nullptr;
+    }
+
+    // Return parent information
+    return tagType->getDecl()->getParent();
+}
+
 // Utility function to remove "/usr/include"
 // Input: /usr/include/Header.hpp
 // Outpur: Header.hpp
@@ -671,5 +978,26 @@ bool CustomASTVisitor::fileContentToBeMocked(const std::string& fileName, const 
 }
 
 std::string CustomASTVisitor::getfileNameFromPath(const std::string& filePath) {
-        return std::filesystem::path(filePath).filename();
+    return std::filesystem::path(filePath).filename();
+}
+
+// Qualified type name - struct ns::foo::bar::buz
+// Return - struct buz
+std::string CustomASTVisitor::getTypeNameFromQualifiedTypeName(const std::string& qualifiedTypeName) {
+    // Nothing to strip
+    if(std::string::npos == qualifiedTypeName.find("::")) {
+        return qualifiedTypeName;
+    }
+
+    // Get first word(example: struct)
+    const std::string firstWord = qualifiedTypeName.substr(0, qualifiedTypeName.find(" "));
+    // Store actual type name
+    const std::string actualTypeName = qualifiedTypeName.substr((qualifiedTypeName.find_last_of("::") + 1),
+                              (qualifiedTypeName.size() - (qualifiedTypeName.find_last_of("::") + 1)));
+
+    return firstWord + " " + actualTypeName;
+}
+
+const std::map<std::string/*fileName*/, std::list<VariableInfoHierarchy>>& CustomASTVisitor::getVariableInfoContainer() {
+    return m_variableInfoContainerMap;
 }

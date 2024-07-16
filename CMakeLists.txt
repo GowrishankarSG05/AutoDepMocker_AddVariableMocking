@@ -21,6 +21,7 @@ set(sourceFiles
     Src/GMockClassGenerator/CPPMockGenerator.cpp
     Src/GMockClassGenerator/CMockGenerator.cpp
     Src/GMockClassGenerator/EnumGenerator.cpp
+    Src/GMockClassGenerator/FieldDeclarationGenerator.cpp
     )
 
 #Executable

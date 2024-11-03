@@ -29,7 +29,7 @@
 #include "MockGeneratorTypes.hpp"
 
 
-class CustomFrontendAction : public clang::ASTFrontendAction {
+class CustomFrontendAction : public clang::ASTFrontendAction, public NonCopyableMovable {
 public:
 
     explicit CustomFrontendAction() = default;

@@ -22,6 +22,7 @@
 #define I_MOCK_GENERATOR_HPP_
 
 #include <string>
+#include <list>
 #include <MockGeneratorTypes.hpp>
 
 class IMockGenerator {
@@ -30,42 +31,13 @@ public:
 
 public:
     /**
-     * @brief Write include information to mock file
-     * @example: <string>, <vector>, <External.hpp>
+     * @brief Construct Mock class using given MockInfoStorage
      * @param fileName: The mock file name
+     * @param mockInfoList: List of mock data identified in file fileName
      * @param includes: List of include information
      */
-    virtual void constructIncludes(const std::string& fileName, const std::vector<std::string>& includes) = 0;
-
-    /**
-     * @brief Write enum information to mock file
-     * @param fileName: The mock file name
-     * @param enumProp: List of enum information
-     */
-    virtual void constructEnum(const std::string& fileName, const std::vector<enumProperties>& enumProp) = 0;
-
-    /**
-     * @brief Write class information to mock file. Contains c++ class, method, function and operator
-     *        overloading and templates
-     * @param classInfo: Class information - @ref CustomType.hpp
-     * @param calleeInfo: Method information - @ref CustomType.hpp
-     */
-    virtual void constructClass(const ClassInfo& classInfo, const std::vector<MethodInfo>& calleeInfo) = 0;
-
-    /**
-     * @brief Write C function information to mock file
-     * @param fileName: The mock file name
-     * @param methodsInfo: List of functions present in the file(fileName)
-     */
-    virtual void constructCFunction(const std::string& fileName, const std::vector<MethodInfo>& methodsInfo) = 0;
-
-    /**
-     * @brief Write field declartion to mock file
-     * @param fileNme: The mock file name
-     * @param fieldInfo: list of field information
-     * @example struct foo, int x, char y
-     */
-    virtual void constructFieldDeclation(const std::string& fileName, const std::list<VariableInfoHierarchy>& fieldInfo) = 0;
+    virtual void constructMockClass(const std::string& fileName, const std::list<MockInfoStorage>& mockInfoList, 
+                 const std::list<std::string>& includeList) = 0;
 
     /**
      * @brief finalize mocking process

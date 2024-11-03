@@ -38,7 +38,7 @@
 
 #include "MockGeneratorTypes.hpp"
 
-class CustomASTVisitor : public clang::RecursiveASTVisitor<CustomASTVisitor> {
+class CustomASTVisitor : public clang::RecursiveASTVisitor<CustomASTVisitor>, public NonCopyableMovable {
 public:
 
     explicit CustomASTVisitor(clang::ASTContext& ASTContext, clang::SourceManager& sourceManager);
@@ -83,20 +83,11 @@ public:
      */
     bool VisitCallExpr(clang::CallExpr* callExpression);
 
-    // Getter function for c++ mock class information. Call this once parsing is completely done
-    std::tuple<ClassInfoType, ClassMethodInfoType> getMockclassInfoAndMethods();
-
-    // Getter function for C mock functions. Call this once parsind is completely done
-    const CFunctionInfoType& getCMockFunctions();
-
-    // Getter function for getting C and C++ Enums
-    const EnumInfo& getEnumInfo();
-
     // Getter function for retrieving include files information. Call this once parsing is completely done
     const IncludeInfo& getIncludeInfo();
 
-    // Getter function for variable information container
-    const std::map<std::string/*fileName*/, std::list<VariableInfoHierarchy>>& getVariableInfoContainer();
+    // Getter function for mock storage retrieval
+    const std::map<std::string/*fileName*/, std::list<MockInfoStorage>>& getMockInfoStorage();
 
 private:
 
@@ -106,30 +97,19 @@ private:
     // Parse C function call expression
     void parseCFunction(clang::CallExpr* callExpr);
 
-    // Parse enum expression
-    void parseEnum(const clang::DeclRefExpr* declRefExpr, const clang::Type* declType/*helper*/);
+    // Parse enum
+    void parseEnum(const clang::EnumDecl* enumDecl);
 
     // Parse c++ operator overloading
     void ParseOperatorOverloading(clang::CXXMethodDecl* cxxMethodDec);
 
-    // Read class and method information from clang::CXXMethodDecl and store it
+    // Read class and method information from clang::CXXMethodDecl
     // Supports C++ method, operator and method overloading and template class
-    void StoreClassAndMethodInfo(clang::CXXMethodDecl* methodDecl, bool operatorOverloadingType = false);
-
-    // Parse parent information of the given declaration
-    // Parent hierarchy information is fetched till certain level
-    void processParentInfoOfDeclaration(clang::DeclContext* parentDeclContext, const std::string& inputChildInfo,
-                                        const std::string& fileName);
-
-    // Store variable declaration information based on parent, child relation
-    void storeVariableDeclationInfo(const std::string& childInfo, const std::string& parentInfo, const std::string& fileName, const bool finalEntry = false);
+    void parseClassAndMethodInfo(clang::CXXMethodDecl* methodDecl, bool operatorOverloadingType = false);
 
     // Function to workaround _Bool types
     // Clang reports bool type as _Bool. So convert _Bool to bool
     std::string checkBool(const std::string typeName);
-
-    // Fetch filename in which clang::Type is defined and store it
-    void storeIncludeInformation(clang::Type* type, const std::string fileName);
 
     // Returns fileName where the given clang::Type is defined
     // List of type possible:
@@ -139,23 +119,30 @@ private:
     //             WorkAround: Include bits/stdc++.h to blindly include everything
     std::optional<std::string> getFileNameFromTypeDeclaration(clang::Type* type);
 
-    // Get parent information of clang::Type
-    // Eample -> class Foo { class Bar {};};
-    //        -> This function is used to retrieve Foo declaration from Type Bar 
-    clang::DeclContext* getParentOfType(clang::Type* type);
+    // Get declaration context from of clang::Type
+    clang::DeclContext* getDeclContextFromType(clang::Type* type);
+
+    // Get declaration from of clang::Type
+    clang::TagDecl* getDeclFromType(const clang::Type* type);
+
+    // Generic function to parse decl context information
+    bool processDeclContextInfo(const clang::DeclContext* declContext, MockInfoStorageType& parentInfo, std::string* storeFileName = nullptr) noexcept;
+
+    // Parse given declaration context and parent hierarchy as well
+    // Example:
+    // Namespace Foo {
+    //   class Bar {
+    //   }
+    // }
+    // Incase Bar context is passed, this function would parse Bar and Foo information
+    void processDeclContextHierarchy(const clang::DeclContext* declContext, const std::string& fileName,
+                                    bool storeIncludeFileName = false,
+                                    std::optional<MockInfoStorageType> appendMockData = {}) noexcept;
 
     // Utility function to remove "/usr/include" prefix
     // Input: /usr/include/Header.hpp
     // Outpur: Header.hpp
     std::string getStrippedFilePath(const std::string fullPath);
-
-    // Utility function to get enum name from fully qualified name
-    // Used only for enum types
-    // Example:
-    // --------
-    // Input: MyNamespace1::MyNamespace2::MyEnum
-    // Return: MyEnum
-    std::string getEnumNameFromFullyQualifiedEnumName(const std::string& memberType);
 
     // Find the given namespace contains "std" string or not
     // Workaround to find out c++ stds
@@ -172,11 +159,17 @@ private:
     // Return - struct buz
     std::string getTypeNameFromQualifiedTypeName(const std::string& qualifiedTypeName);
 
-    // Store given variable information list into m_variableInfoContainerMap
-    void storeListInfoContainer(const std::string& fileName, const std::vector<std::string>& varInfoList);
+    // Fetch filename in which clang::Type is defined and store it
+    void storeIncludeInformation(clang::Type* type, const std::string fileName);
 
-    // Implements core logic of storing variable information in m_variableInfoContainerMap
-    void storeListInfoContainerCore(const std::vector<std::string>& varInfoList, VariableInfoHierarchy& container, const bool newEntry = false);
+    // Store include information
+    void storeIncludeInformation(const std::string& fileName, const std::string& includeFileName);
+
+    // Identify right node and store data in it
+    void storeMockData(const std::string& fileName, MockInfoStorageType mockData) noexcept;
+
+    // Reset current node to root node of filename in the map
+    void resetCurrentStorageNode(const std::string& fileName) noexcept;
 
     // To obtain file-related information(Example: filename, location) utilize Clang ASTContext and SourceManager
     clang::ASTContext& m_ASTContext;
@@ -185,23 +178,10 @@ private:
     // Include file information
     IncludeInfo m_includes;
 
-    // C++ mock information
-    ClassInfoType m_mockClassInfo;
-    ClassMethodInfoType m_mockCPPMethodInfo;
+    // Storage container for storing mock data
+    std::map<std::string/*fileName*/, std::list<MockInfoStorage>> m_mockInfoStorage = {};
+    std::list<MockInfoStorage>* m_mockInfoStorageRef = {};
 
-    // C mock information contains function information mapped with file name
-    CFunctionInfoType m_CFunctionInfo;
-
-    // C and C++ Enum mock information
-    EnumInfo m_enumInfo; // fileName, Enum Properties
-
-    // List of variable information in the form of hierarchy
-    std::list<std::string> m_variableInfo;
-
-    // List of sequence of variable information corresponding to file
-    std::map<std::string/*fileName*/, std::list<VariableInfoHierarchy>> m_variableInfoContainerMap;
-
-    MethodInfo calleeData = {};
     std::vector<std::string> notTobeMockedFiles = {"include/c++/", "include/x86_64-linux-gnu/c++"};
     std::vector<std::string> tobeMockedFiles = {};
 
@@ -209,7 +189,6 @@ private:
 
     // Logger file
     std::ofstream logFile;
-
 };
 
 #endif // CUSTOMASTVISITOR_HPP

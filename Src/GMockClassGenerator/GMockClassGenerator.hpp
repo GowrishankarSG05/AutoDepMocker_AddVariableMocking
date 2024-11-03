@@ -22,33 +22,21 @@
 #define GMOCK_CLASS_GENERATOR_HPP_
 
 #include "IMockGenerator.hpp"
-#include "CPPMockGenerator.hpp"
-#include "EnumGenerator.hpp"
-#include "CMockGenerator.hpp"
-#include "FieldDeclarationGenerator.hpp"
+#include "GMockClassMockGeneratorImpl.hpp"
 
-class GMockClassGenerator : public IMockGenerator {
+class GMockClassGenerator : public IMockGenerator, public NonCopyableMovable {
 public:
     // Special member functions
     explicit GMockClassGenerator() = default;
     ~GMockClassGenerator() = default;
-    GMockClassGenerator& operator =(const GMockClassGenerator&) = delete;
-    GMockClassGenerator(const GMockClassGenerator&) = delete;
 
     // IMockGenerator interface
-    void constructIncludes(const std::string& fileName, const std::vector<std::string>& includes) override;
-    void constructEnum(const std::string& fileName, const std::vector<enumProperties>& enumProp) override;
-    void constructClass(const ClassInfo& classInfo, const std::vector<MethodInfo>& calleeInfo) override;
-    void constructCFunction(const std::string& fileName, const std::vector<MethodInfo>& methodsInfo) override;
-    void constructFieldDeclation(const std::string& fileName, const std::list<VariableInfoHierarchy>& fieldInfo) override;
+    void constructMockClass(const std::string& fileName, const std::list<MockInfoStorage>& mockInfoList, const std::list<std::string>& includeList) override;
     void finalizeMocking() override;
 
 private:
     // Generators
-    CPPMockGenerator m_cppMockgenerator;
-    EnumGenerator m_enumGenerator;
-    CMockGenerator m_cMockGenerator;
-    FieldDeclarationGenerator m_fieldDeclGenerator;
+    GMockClassGeneratorImpl m_gmockClassGeneratorImpl;
 
 };
 

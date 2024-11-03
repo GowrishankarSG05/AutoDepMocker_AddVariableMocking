@@ -25,12 +25,29 @@
 #include <vector>
 #include <map>
 #include <cstdint>
+#include <variant>
+#include <list>
 
 #include "clang/Basic/SourceManager.h"
 #include "clang/AST/ASTContext.h"
 
 // Contains includes information mapped with file name
-using IncludeInfo = std::map<std::string, std::vector<std::string>>;
+using IncludeInfo = std::map<std::string, std::list<std::string>>;
+
+// List of nodes in storage tree
+struct NamespaceInfo {
+    std::string namespaceName = {};
+};
+
+// Contains mock class information
+struct ClassStructUnionInfo {
+    std::string name;
+    std::string declKindName = "class "; // default
+    std::string filename;
+    std::vector<std::string> namespaceInfo;
+    bool isTemplateClass = false;
+    std::vector<std::string> templateParams;
+};
 
 // Contains mock method(C and C++) information
 struct MethodInfo {
@@ -40,24 +57,12 @@ struct MethodInfo {
     bool isOperatorOverloading = false;
     bool isTemplated = false;
     std::vector<std::string> args;
+    bool isCFunction = false;
 };
 
-// Contains mock class information
-struct ClassInfo {
-    std::string name;
-    std::string fullName;
-    std::string declKindName = "class ";
-    std::string filename;
-    std::vector<std::string> namespaceInfo;
-    bool isTemplateClass = false;
-    std::vector<std::string> templateParams;
+struct FieldDeclInfo {
+    std::string declName = {};
 };
-
-using ClassInfoType = std::map<std::string, ClassInfo>; // contains className and details about the class
-using ClassMethodInfoType = std::map<std::string, std::vector<MethodInfo>>; // contains className with methods info
-
-// C functions - store function and filename, filename is key
-using CFunctionInfoType = std::map<std::string, std::vector<MethodInfo>>;
 
 // C and CPP Enum information
 struct enumProperties {
@@ -67,12 +72,20 @@ struct enumProperties {
     bool isScopedEnum = false;
 };
 
-using EnumInfo = std::map<std::string/*fileName*/, std::vector<enumProperties>>;
+using MockInfoStorageType = std::variant<NamespaceInfo, ClassStructUnionInfo, enumProperties, MethodInfo, FieldDeclInfo>;
+struct MockInfoStorage {
+    MockInfoStorageType data = {};
+    std::list<MockInfoStorage> childData = {};
+};
 
-// Contains chain of variable information
-struct VariableInfoHierarchy {
-    std::string variableInfo = {};
-    std::list<VariableInfoHierarchy> variableInfoHierarchyList = {};
+// Utility class to make non copyable and movable
+class NonCopyableMovable {
+    public:
+    NonCopyableMovable() = default;
+    ~NonCopyableMovable() = default;
+    // Delete copy, move and assignment operator
+    NonCopyableMovable(const NonCopyableMovable&) = delete;
+    NonCopyableMovable& operator=(const NonCopyableMovable&) = delete;
 };
 
 #endif // CUSTOM_TYPES_HPP_

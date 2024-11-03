@@ -57,35 +57,15 @@ void CustomASTConsumer::generateMockFiles() {
     GMockClassGenerator gmockGenerator;
     IMockGenerator& mockGenerator = gmockGenerator;
 
-    // Write include information first
-    const IncludeInfo& includeInfo = m_customASTvisitor->getIncludeInfo();
-    for(const auto& each : includeInfo) {
-        mockGenerator.constructIncludes(each.first, each.second);
+    const auto mockInfoStorage = m_customASTvisitor->getMockInfoStorage();
+    const auto includeInfo = m_customASTvisitor->getIncludeInfo();
+    for(auto& eachEntry : mockInfoStorage) {
+        if(includeInfo.count(eachEntry.first)) {
+            mockGenerator.constructMockClass(eachEntry.first, eachEntry.second, includeInfo.at(eachEntry.first));
+        } else {
+            mockGenerator.constructMockClass(eachEntry.first, eachEntry.second, {}/*NoIncludes*/);
+        }
     }
-
-    // Write Enums
-    const EnumInfo& enumInfo = m_customASTvisitor->getEnumInfo();
-    for(const auto& itr : enumInfo) {
-        mockGenerator.constructEnum(itr.first, itr.second);
-    }
-
-    // Write C++ classes
-    const auto [classInfo, classMethodsInfo] = m_customASTvisitor->getMockclassInfoAndMethods();
-    for(const auto& itr : classInfo) {
-        mockGenerator.constructClass(itr.second, classMethodsInfo.at(itr.first));
-    }
-
-    // Write C functions
-    const CFunctionInfoType& cFunctionsInfo = m_customASTvisitor->getCMockFunctions();
-    for(const auto& each : cFunctionsInfo) {
-        mockGenerator.constructCFunction(each.first, each.second);
-    }
-
-    // Write field declaration
-    const std::map<std::string/*fileName*/, std::list<VariableInfoHierarchy>>& varInfo = m_customASTvisitor->getVariableInfoContainer();
-   for(const auto& each : varInfo) {
-        mockGenerator.constructFieldDeclation(each.first, each.second);
-   }
 
     // Finish mocking
     mockGenerator.finalizeMocking();

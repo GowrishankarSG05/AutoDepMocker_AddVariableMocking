@@ -7,5 +7,8 @@ build/
 # log file
 AutoDepMocker.log
 
+# generated mock files
+GeneratedMocks
+
 # vi swp files
 *.swp

@@ -18,10 +18,7 @@ set(sourceFiles
     Src/CodeParser/CustomASTVisitor.cpp
     Src/GMockClassGenerator/GMockClassGenerator.cpp
     Src/GMockClassGenerator/GeneratorUtilities.cpp
-    Src/GMockClassGenerator/CPPMockGenerator.cpp
-    Src/GMockClassGenerator/CMockGenerator.cpp
-    Src/GMockClassGenerator/EnumGenerator.cpp
-    Src/GMockClassGenerator/FieldDeclarationGenerator.cpp
+    Src/GMockClassGenerator/GMockClassMockGeneratorImpl.cpp
     )
 
 #Executable

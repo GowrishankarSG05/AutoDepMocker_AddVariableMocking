@@ -30,11 +30,8 @@
 #include "clang/Basic/SourceManager.h"
 
 #include "CustomASTVisitor.hpp"
-#include "EnumGenerator.hpp"
-#include "CPPMockGenerator.hpp"
-#include "CMockGenerator.hpp"
 
-class CustomASTConsumer : public clang::ASTConsumer {
+class CustomASTConsumer : public clang::ASTConsumer, public NonCopyableMovable {
 public:
 
     explicit CustomASTConsumer(clang::SourceManager& sourceManager);

@@ -19,9 +19,12 @@
   * limitations under the License.
   */
 
+#include <iterator>
+
 #include "CustomASTVisitor.hpp"
 #include "CustomFrontendAction.hpp"
 #include "CustomASTConsumer.hpp"
+#include "Defines.hpp"
 
 CustomASTVisitor::CustomASTVisitor(clang::ASTContext& ASTContext, clang::SourceManager& sourceManager)
     : m_ASTContext(ASTContext)
@@ -46,8 +49,13 @@ CustomASTVisitor::~CustomASTVisitor() {
 
 // Ignore buildin types, c++ std types and types which are defined in same source file
 // Parse and mock only types which are defined in externel file
-bool CustomASTVisitor::VisitVarDecl(clang::VarDecl* variableDecl)
-{
+// Example: Foo obj; 
+//          This function will be called when above line is parsed 
+bool CustomASTVisitor::VisitVarDecl(clang::VarDecl* variableDecl) {
+    if(! variableDecl) {
+        logFile << "WARN: Invalid VarDecl handle received" << std::endl;
+        return true;
+    }
     logFile << "INFO: VisitVarDecl: " << variableDecl->getDeclName().getAsString() << std::endl;
 
     // Ignore buildin types
@@ -67,6 +75,10 @@ bool CustomASTVisitor::VisitVarDecl(clang::VarDecl* variableDecl)
                 m_sourceManager.getFileEntryForID(m_sourceManager.getMainFileID())->getName());
     const auto declFileName = getFileNameFromTypeDeclaration(const_cast<clang::Type*>(
                 variableDecl->getType().getTypePtrOrNull())).value_or(std::string());
+    if(declFileName.empty()) {
+        logFile << "WARN: Unable to find declaration file name" << std::endl;
+        return true;
+    }
 
     const auto declFileNameStripped = getfileNameFromPath(declFileName);
 
@@ -74,43 +86,67 @@ bool CustomASTVisitor::VisitVarDecl(clang::VarDecl* variableDecl)
         logFile << "WARN: Unable to get declaration file name, Skipping" << std::endl;
         return true;
     }
+
     if(sourcefileName == declFileNameStripped) {
         logFile << "INFO: Declaration origin is source file, Skipping" << std::endl;
         return true;
     }
 
     // Get declaration name
-    std::string childInfo = getTypeNameFromQualifiedTypeName(
+    std::string declName = getTypeNameFromQualifiedTypeName(
                                       variableDecl->getType().getDesugaredType(m_ASTContext).getAsString());
 
-    // Get parent of above declaration, required to build complete information
-    auto parentDeclContext = getParentOfType(const_cast<clang::Type*>(variableDecl->getType().getTypePtrOrNull()));
+    if(! fileContentToBeMocked(declFileNameStripped, declName)) {
+        logFile << "INFO: Not mocking file: " << declFileNameStripped << std::endl;
+        return true;
+    }
 
-    // Get complete parent information for certain level and store it in container
-    processParentInfoOfDeclaration(parentDeclContext, childInfo, declFileNameStripped);
+    // Incase if it is enum variable declaration
+    if(variableDecl->getType().getTypePtrOrNull()->isEnumeralType() || 
+                  variableDecl->getType().getTypePtrOrNull()->isScopedEnumeralType()) {
+        parseEnum(clang::dyn_cast<clang::EnumDecl>(
+                            getDeclFromType(const_cast<clang::Type*>(variableDecl->getType().getTypePtrOrNull()))));
+        return true;
+    }
+
+    // Parse parent hierarchy information of variable type
+    clang::DeclContext* declContext = getDeclContextFromType(const_cast<clang::Type*>(variableDecl->getType().getTypePtrOrNull()));
+    if(! declContext) {
+        logFile << "WARN: Unable to read decl context from type" << std::endl;
+        return true;
+    }
+
+    processDeclContextHierarchy(declContext, declFileNameStripped);
+
     return true;
 }
 
 // It supports parsing C/C++ Enums
+// Need not to use for parsing other types
 bool CustomASTVisitor::VisitDeclRefExpr(const clang::DeclRefExpr* declRefExpr) {
 
+    if(! declRefExpr) {
+        logFile << "WARN: Invalid DeclRefExpr handle received" << std::endl;
+        return true;
+    }
     logFile << "INFO: VisitDeclRefExpr: " << declRefExpr->getNameInfo().getAsString() << std::endl;
 
     // operator overload functions show up as C function
+    // This will be handled in parseCFunction()
     if(std::string::npos != declRefExpr->getNameInfo().getAsString().find("operator")) {
         logFile << "INFO: Operator overload function found in VisitDeclRefExpr, skipping" << std::endl;
         return true;
     }
 
-    // BaseType Identifier is only meant for user defined types, including std types
-    // int, char, ... does not have base type
-    // Also C functions do not have basetype, So this would collapse incase of c file
     const clang::ValueDecl* valueDecl = declRefExpr->getDecl();
     if(! valueDecl) {
         logFile << "INFO: Unable to find declaration, Skipping" << std::endl;
         return false;
     }
 
+    // BaseType Identifier is only meant for user defined types, including std types
+    // int, char, ... does not have base type
+    // Also C functions do not have basetype, So this would fail for c function
     auto* baseType = valueDecl->getType().getBaseTypeIdentifier();
     if(! baseType) {
         logFile << "INFO: build in type found, Skipping" << std::endl;
@@ -125,13 +161,22 @@ bool CustomASTVisitor::VisitDeclRefExpr(const clang::DeclRefExpr* declRefExpr) {
 
     // Parse enum
     if(declType->isEnumeralType() || declType->isScopedEnumeralType()) {
-        parseEnum(declRefExpr, declType);
+        auto enumTagDecl = getDeclFromType(declRefExpr->getType().getTypePtr());
+        if(! enumTagDecl) {
+            logFile << "WARN: Unable to get tag declaration from enum type" << std::endl;
+            return true;
+        }
+        parseEnum(clang::dyn_cast<clang::EnumDecl>(enumTagDecl));
     }
 
     return true; // Parse only C/C++ Enum types
 }
 
 bool CustomASTVisitor::VisitMemberExpr(const clang::MemberExpr* memberExpr) {
+    if(! memberExpr) {
+        logFile << "WARN: Invalid MemberExpr handle received" << std::endl;
+        return true;
+    }
     logFile << "INFO: VisitMemberExpr, member name: " << memberExpr->getMemberNameInfo().getAsString() << std::endl;
     logFile << "INFO: VisitMemberExpr, member type: " << memberExpr->getMemberDecl()->getType().getAsString() << std::endl;
 
@@ -155,13 +200,53 @@ bool CustomASTVisitor::VisitMemberExpr(const clang::MemberExpr* memberExpr) {
 
     const std::string childInfo = memberExpr->getMemberDecl()->getType().getAsString() + 
                     PredefinedMockData::aSpace + memberExpr->getMemberNameInfo().getAsString();
-    processParentInfoOfDeclaration(valueDecl->getDeclContext(), childInfo, declFileNameStripped);
+    // Example:
+    // enum Foo { EnumConst1, EnumConst2};
+    // struct Bar {
+    //     Foo enumObj;
+    // };
+    // Later, Bar barObj; barObj.enumObj = EnumConst1;
+    // This function would be called when above line is hit. Basically member reference
+    // So here "enum Foo" and "struct Bar" both should be processed and stored
+    
+    // Below code block would parse "Foo" information
+    auto* declType = memberExpr->getMemberDecl()->getType().getTypePtrOrNull();
+    if(declType->isEnumeralType()) {
+        parseEnum(clang::dyn_cast<clang::EnumDecl>(getDeclFromType(declType)));
+    } else {
+        // For other types like struct, class
+        if(getDeclFromType(declType)) {
+            const std::string fileName = getfileNameFromPath(getStrippedFilePath(
+                            m_sourceManager.getFilename(getDeclFromType(declType)->getLocation()).data()));
+    
+            if(fileContentToBeMocked(fileName, childInfo)) {
+                clang::DeclContext* declContext = getDeclFromType(declType);
+                processDeclContextHierarchy(declContext, fileName);
+            } else {
+                logFile << "INFO: Not mocking file: " << fileName << std::endl;
+            }
+        } else {
+            logFile << "INFO: Unable to get decl from type(Might be build in type), skipping" << std::endl;
+        }
+    }
 
+    // Below code block would parse "Bar" information
+    if(fileContentToBeMocked(declFileNameStripped, childInfo)) {
+        clang::DeclContext* declContext = valueDecl->getDeclContext();
+        processDeclContextHierarchy(declContext, declFileNameStripped, true/*StoreInclude*/, FieldDeclInfo{childInfo});
+    } else {
+        logFile << "INFO: Not mocking file: " << declFileNameStripped << std::endl;
+    }
+    
     return true;
 }
 
 // This gets called first for all callExpression
 bool CustomASTVisitor::VisitCallExpr(clang::CallExpr* callExpression) {
+    if(! callExpression) {
+        logFile << "WARN: Invalid CallExpr handle received" << std::endl;
+        return true;
+    }
 
     // @Note: getDirectCallee() seems to return nullptr for cast expression. But callExpression->getCalleeDecl() would work
     // However cast expressions can be skipped
@@ -169,7 +254,7 @@ bool CustomASTVisitor::VisitCallExpr(clang::CallExpr* callExpression) {
         logFile << "WARN: Suspecious CallExpr found, Skipping" << std::endl;
         return true;
     }
-    logFile << "INFO: VisitCallExpr, callee " << callExpression->getDirectCallee()->getNameAsString().c_str() << std::endl;
+    logFile << "INFO: VisitCallExpr, callee name: " << callExpression->getDirectCallee()->getNameAsString().c_str() << std::endl;
 
     clang::Expr* calleeExpr = callExpression->getCallee();
     if(! calleeExpr) {
@@ -186,24 +271,13 @@ bool CustomASTVisitor::VisitCallExpr(clang::CallExpr* callExpression) {
     return true;
 }
 
-// Getter function for getting C++ class and methods information
-std::tuple<ClassInfoType, ClassMethodInfoType> CustomASTVisitor::getMockclassInfoAndMethods() {
-    return {m_mockClassInfo, m_mockCPPMethodInfo};
-}
-
-// Getter function for getting C functions information
-const CFunctionInfoType& CustomASTVisitor::getCMockFunctions() {
-    return m_CFunctionInfo;
-}
-
-// Getter function for getting C and C++ Enums
-const EnumInfo& CustomASTVisitor::getEnumInfo() {
-    return m_enumInfo;
-}
-
 // Getter function for getting include files information
 const IncludeInfo& CustomASTVisitor::getIncludeInfo() {
     return m_includes;
+}
+
+const std::map<std::string/*fileName*/, std::list<MockInfoStorage>>& CustomASTVisitor::getMockInfoStorage() {
+    return m_mockInfoStorage;
 }
 
 // Parse C++ member expression and store class-method information
@@ -220,7 +294,7 @@ void CustomASTVisitor::parseCXXMemberExpression(clang::CallExpr* callEpr) {
         return;
     }
 
-    StoreClassAndMethodInfo(clang::dyn_cast<clang::CXXMethodDecl>(callEpr->getDirectCallee()));
+    parseClassAndMethodInfo(methodDecl);
 }
 
 // VisitCallExpr, callee read
@@ -263,7 +337,7 @@ void CustomASTVisitor::parseCFunction(clang::CallExpr* callExpr) {
         return;
     }
 
-    // Functions originating from the same source file
+    // Check if function originating from the same source file
     const std::string SourcefileName = getfileNameFromPath(m_sourceManager.getFileEntryForID(m_sourceManager.getMainFileID())->getName());
     const std::string currentFileName = getfileNameFromPath(m_sourceManager.getFilename(functionDecl->getLocation())).data();
     std::string currentFileNameStripped = currentFileName.substr(0, currentFileName.find(".")); // To include header file as well
@@ -286,25 +360,12 @@ void CustomASTVisitor::parseCFunction(clang::CallExpr* callExpr) {
     }
 
     std::string fileName = getfileNameFromPath(m_sourceManager.getFilename(functionDecl->getLocation()).data());
-    if(! fileContentToBeMocked(m_sourceManager.getFilename(functionDecl->getLocation()).data(), functionDecl->getNameAsString())) {
-        logFile << "INFO: Not mocking - " << functionDecl->getNameAsString() << std::endl;
+    if(! fileContentToBeMocked(fileName, functionDecl->getNameAsString())) {
+        logFile << "INFO: Not mocking - " << fileName << std::endl;
         return;
     }
 
-    // If new entry, Reserve a place
-    if(! m_CFunctionInfo.count(fileName)) {
-        m_CFunctionInfo[fileName] = {};
-    }
-
-    // Is function information already noted
-    for(const auto& each : m_CFunctionInfo.at(fileName)) {
-        if(each.name == functionDecl->getNameAsString()) {
-            logFile << "INFO: Function information already present, Skipping" << std::endl;
-            return;
-        }
-    }
-
-    // Finally store it
+    // Parse and get C function information
     MethodInfo methodInfo;
     methodInfo.name = functionDecl->getNameAsString();
     methodInfo.returnType = checkBool(functionDecl->getReturnType().getAsString());
@@ -319,92 +380,52 @@ void CustomASTVisitor::parseCFunction(clang::CallExpr* callExpr) {
         storeIncludeInformation(const_cast<clang::Type*>(functionDecl->getParamDecl(i)->getType().getTypePtr()), fileName);
     }
     methodInfo.args = argsInfo;
+    methodInfo.isCFunction = true;
 
-    // store C function information with fileName(key)
-    m_CFunctionInfo[fileName].push_back(methodInfo);
+    const clang::DeclContext* parentDeclContext = functionDecl->getParent();
+    processDeclContextHierarchy(parentDeclContext, fileName, false ,methodInfo);
 }
 
 // Parse C and C++ scoped enum types
-// Example: enum name { ONE, TWO }; || enum class name { ONE, TWO };
-void CustomASTVisitor::parseEnum(const clang::DeclRefExpr* declRefExpr, const clang::Type* declType/*helper*/) {
-    if(! declRefExpr || ! declRefExpr->getDecl()) {
-        logFile << "WARN: Invalid declaration reference expression" << std::endl;
+// And also parse enum parent information
+void CustomASTVisitor::parseEnum(const clang::EnumDecl* enumDecl) {
+    if(! enumDecl) {
+        logFile << "WARN: Invalid EnumDecl received, unable to parse eum declaration" << std::endl;
         return;
     }
 
-    // @Note: Using clang::NamespaceDecl is the proper way, But unfortunatly it didn't work
-    //        Finding the right declaration might help to resolve this issue. Until that we can use the below way
-    const std::string enumFullName = declRefExpr->getDecl()->getType().getUnqualifiedType().getDesugaredType(m_ASTContext).
-            getAsString().substr(5); // Remove "Enum" keyword
-
-    // Check declaration belonging to Main file
+    // Get actual input file name
     const std::string sourceFileName = getfileNameFromPath(m_sourceManager.getFileEntryForID(m_sourceManager.getMainFileID())->getName());
-    const std::string currentfileName = getfileNameFromPath(m_sourceManager.getFilename(declRefExpr->getDecl()->getLocation()).data());
-    const std::string fileNameStripped = currentfileName.substr(0, currentfileName.find("."));
-    if(std::string::npos != sourceFileName.find(fileNameStripped)) {
-        logFile << "INFO: Enum belonging to Main source file, Skipping" << std::endl;
+
+    // Get file name from EnumDecl
+    const std::string declFileName = getfileNameFromPath(m_sourceManager.getFilename(enumDecl->getLocation()).data());
+
+    if(sourceFileName == declFileName) {
+        logFile << "INFO: Enum belonging to main source file, Skipping" << std::endl;
+        return; // do nothing
+    }
+
+    if(! fileContentToBeMocked(declFileName, enumDecl->getNameAsString())) {
+        logFile << "INFO: Not mocking file: " << declFileName << std::endl;
         return;
     }
 
-    const std::string enumNameFound = getEnumNameFromFullyQualifiedEnumName(enumFullName);
-    logFile << "INFO: Enum name" << enumNameFound << ", Enum full name: " << enumFullName << std::endl;
-    const std::string valueFound = declRefExpr->getNameInfo().getAsString();
+    resetCurrentStorageNode(declFileName);
 
-    bool isEnumStored = false;
-    bool isEnumValueStored = false;
-    enumProperties* enumRef = {};
+    // Parse enum information
+    enumProperties enumProps = {};
+    enumProps.enumName = enumDecl->getNameAsString();
+    enumProps.isScopedEnum = enumDecl->isScoped();
+    logFile << "INFO: Enum name: " << enumProps.enumName << std::endl;
 
-    if(m_enumInfo.count(currentfileName)) {
-        // File name already stored
-        for(auto& eachEnumStored : m_enumInfo.at(currentfileName)) {
-            if(eachEnumStored.enumName == enumNameFound) {
-                // Enum name already stored
-                isEnumStored = true;
-                enumRef = &eachEnumStored;
-                // Traverse each enum value
-                for(const auto enumValueStored : eachEnumStored.enumValues) {
-                    if(enumValueStored == valueFound) {
-                        // Enum value already stored
-                        isEnumValueStored = true;
-                    }
-                }
-                // New enum value in existing enum, Store it
-                if(! isEnumValueStored) {
-                    eachEnumStored.enumValues.push_back(valueFound);
-                    return;
-                }
-                break;
-            }
-        }
+    for(const auto* enumConst : enumDecl->enumerators()) {
+        enumProps.enumValues.push_back(enumConst->getNameAsString());
+        logFile << "Enum const name: " << enumConst->getNameAsString() << std::endl;
     }
 
-    // Enum and Enum value already stored, Nothing to do
-    if(isEnumStored && isEnumValueStored) {
-        logFile << "INFO: Enum value is already stored, skipping" << std::endl;
-        return;
-    }
-
-    // Enum and enum value are not stored yet
-    if(! fileContentToBeMocked(m_sourceManager.getFilename(declRefExpr->getDecl()->getLocation()).data(), enumNameFound)) {
-        return; // Not mocking as user not interested
-    }
-
-    // Make entry in global enum
-    if(! m_enumInfo.count(currentfileName)) {
-        m_enumInfo[currentfileName] = {};
-    }
-
-    if(! isEnumStored) {
-        enumProperties properties = {};
-        properties.enumName = enumNameFound;
-        properties.enumFullName = enumFullName;
-        properties.enumValues.push_back(valueFound);
-        properties.isScopedEnum = declType->isScopedEnumeralType();
-        m_enumInfo.at(currentfileName).push_back(properties);
-    } else {
-        enumRef->enumValues.push_back(valueFound);
-    }
-    return;
+    // Now get enum parent information
+    const clang::DeclContext* parentDeclContext = enumDecl->getParent();
+    processDeclContextHierarchy(parentDeclContext, declFileName, false, enumProps);
 }
 
 void CustomASTVisitor::ParseOperatorOverloading(clang::CXXMethodDecl* cxxMethodDec) {
@@ -413,10 +434,10 @@ void CustomASTVisitor::ParseOperatorOverloading(clang::CXXMethodDecl* cxxMethodD
         return;
     }
 
-    StoreClassAndMethodInfo(cxxMethodDec, true/*operator overloading*/);
+    parseClassAndMethodInfo(cxxMethodDec, true/*operator overloading*/);
 }
 
-void CustomASTVisitor::StoreClassAndMethodInfo(clang::CXXMethodDecl* methodDecl, bool operatorOverloadingType) {
+void CustomASTVisitor::parseClassAndMethodInfo(clang::CXXMethodDecl* methodDecl, bool operatorOverloadingType) {
     if(! methodDecl || ! methodDecl->getParent()) {
         logFile << "WARN: Unable to get parent declaration of CXXMethodDecl" << std::endl;
         return;
@@ -432,74 +453,15 @@ void CustomASTVisitor::StoreClassAndMethodInfo(clang::CXXMethodDecl* methodDecl,
         return;
     }
 
-    const std::string className = methodDecl->getParent()->getNameAsString();
-
-    if(! fileContentToBeMocked(m_sourceManager.getFilename(methodDecl->getParent()->getLocation()).data(), className)) {
+    if(! fileContentToBeMocked(currentFileName, methodDecl->getParent()->getNameAsString())) {
+        logFile << "INFO: Not mocking file: " << currentFileName << std::endl;
         return;
     }
 
-    ClassInfo classInfo = {};
-    classInfo.name = methodDecl->getParent()->getNameAsString();
-    classInfo.fullName = methodDecl->getParent()->getQualifiedNameAsString(); // Useless
-    
-    // Default declaration kind name is "class"
-    if(methodDecl->getParent()->isStruct()) {
-        classInfo.declKindName = PredefinedMockData::struct_;
-    } else if(methodDecl->getParent()->isUnion()) {
-        classInfo.declKindName = PredefinedMockData::union_;
-    }
-
-    // Read Namespace information
-    const clang::DeclContext* declContext = methodDecl->getParent()->getEnclosingNamespaceContext();
-    if (const clang::NamespaceDecl* namespaceDecl = clang::dyn_cast<clang::NamespaceDecl>(declContext)) {
-        // Make sure namespace information is stored in the right order
-        classInfo.namespaceInfo.insert(classInfo.namespaceInfo.begin(), namespaceDecl->getNameAsString());
-        // If there are parent namespaces, Add them too
-        const clang::DeclContext* parentDeclContext = namespaceDecl->getParent();
-        while (parentDeclContext && clang::isa<clang::NamespaceDecl>(parentDeclContext)) { // Loop over to fetch namespace information
-            namespaceDecl = clang::cast<clang::NamespaceDecl>(parentDeclContext);
-            classInfo.namespaceInfo.insert(classInfo.namespaceInfo.begin(), namespaceDecl->getNameAsString());
-            parentDeclContext = namespaceDecl->getParent();
-        }
-    }
-
-    // Check if the class is template class
-    if(methodDecl->getParent()->getTemplateInstantiationPattern()) {
-        if(! methodDecl->getParent()->getTemplateInstantiationPattern()) {
-            logFile << "WARN: Unable to get Template instantiation pattern of CXXRecordDecl" << std::endl;
-            return;
-        }
-        if(! methodDecl->getParent()->getTemplateInstantiationPattern()->getDescribedClassTemplate()) {
-            logFile << "WARN: Unable to get Described Class Template from CXXRecordDecl" << std::endl;
-            return;
-        }
-        if(! methodDecl->getParent()->getTemplateInstantiationPattern()->getDescribedClassTemplate()->getTemplateParameters()) {
-            logFile << "WARN: Unable to get Template parameter list from ClassTempDecl" << std::endl;
-            return;
-        }
-        clang::TemplateParameterList* templateParamList = methodDecl->getParent()->getTemplateInstantiationPattern()->getDescribedClassTemplate()->getTemplateParameters();
-        std::vector<std::string> tempParamList;
-        for(int i=0; i<templateParamList->size(); i++) {
-            tempParamList.push_back(templateParamList->getParam(i)->getNameAsString());
-        }
-
-        classInfo.isTemplateClass = true;
-        classInfo.templateParams = tempParamList;
-    }
-
-    classInfo.filename = getfileNameFromPath(m_sourceManager.getFilename(methodDecl->getParent()->getLocation()));
-    logFile << "INFO: Filename: " << classInfo.filename << std::endl;
-    logFile << "INFO: Class full name: " << classInfo.fullName << std::endl;
-
-    m_mockClassInfo[classInfo.name] = classInfo;
-
-    // Store callee information, RVALUE
-    if(! m_mockCPPMethodInfo.count(classInfo.name)) {
-        m_mockCPPMethodInfo[classInfo.name] = {};
-    }
+    // Parse method information
     MethodInfo methodInfo = {};
     clang::FunctionDecl* functionDecl = {};
-    if(classInfo.isTemplateClass) { // UnWrap the template instance
+    if(methodDecl->getParent()->getTemplateInstantiationPattern()) { // UnWrap the template instance
         functionDecl = methodDecl->getTemplateInstantiationPattern();
     } else {
         functionDecl = clang::dyn_cast_or_null<clang::FunctionDecl>(methodDecl);
@@ -509,210 +471,24 @@ void CustomASTVisitor::StoreClassAndMethodInfo(clang::CXXMethodDecl* methodDecl,
         return;
     }
 
-    // Is Method information already stored
-    for(const auto& eachMethod : m_mockCPPMethodInfo.at(classInfo.name)) {
-        if(eachMethod.name == functionDecl->getNameAsString()) {
-            // Fill up arguments for comparision
-            std::vector<std::string> argsInfo;
-            for(int i=0; i<functionDecl->getNumParams(); i++) {
-                argsInfo.push_back(checkBool(functionDecl->getParamDecl(i)->getType().getAsString())); // Decl always has a type
-            }
-            if(argsInfo == eachMethod.args) {
-                logFile << "INFO: callee Information is already present, skipping" << std::endl;
-                return;
-            }
-        }
-    }
-
-    // Store method information
     methodInfo.name = functionDecl->getNameAsString();
     methodInfo.returnType = checkBool(functionDecl->getReturnType().getAsString());
     logFile << "INFO: Store the file name of return type defined: " << methodInfo.returnType.c_str() << std::endl;
-    storeIncludeInformation(const_cast<clang::Type*>(functionDecl->getReturnType().getTypePtr()), classInfo.filename);
+    storeIncludeInformation(const_cast<clang::Type*>(functionDecl->getReturnType().getTypePtr()), currentFileName);
     methodInfo.isConst = methodDecl->isConst();
     methodInfo.isTemplated = functionDecl->isTemplated();
     std::vector<std::string> argsInfo;
     for(int i=0; i<functionDecl->getNumParams(); i++) {
         argsInfo.push_back(checkBool(functionDecl->getParamDecl(i)->getType().getAsString())); // Decl always has a type
         logFile << "INFO: Store the file name of function arg defined: " << functionDecl->getParamDecl(i)->getType().getAsString().c_str() << std::endl;
-        storeIncludeInformation(const_cast<clang::Type*>(functionDecl->getParamDecl(i)->getType().getTypePtr()), classInfo.filename);
+        storeIncludeInformation(const_cast<clang::Type*>(functionDecl->getParamDecl(i)->getType().getTypePtr()), currentFileName);
     }
     methodInfo.args = argsInfo;
     methodInfo.isOperatorOverloading = operatorOverloadingType;
 
-    // Finally link callee information with caller
-    m_mockCPPMethodInfo[classInfo.name].push_back(methodInfo);
-}
-
-void CustomASTVisitor::processParentInfoOfDeclaration(clang::DeclContext* parentDeclContext, const std::string& inputChildInfo,
-                                        const std::string& fileName) {
-
-    std::string childInfo = inputChildInfo;
-
-    // Parse until last parent in the hierarchy
-    while(parentDeclContext) {
-        if(clang::isa<clang::RecordDecl>(parentDeclContext)) {
-            clang::NamedDecl* namedDecl = clang::dyn_cast_or_null<clang::NamedDecl>(parentDeclContext);
-            // Get parent name. filename would be same
-            clang::RecordDecl* recordDecl = clang::dyn_cast<clang::RecordDecl>(parentDeclContext);
-            std::string typeString = {};
-            if(recordDecl->isStruct()) {
-                typeString = "struct ";
-            } else if(recordDecl->isClass()) {
-                typeString = "class ";
-            } else if(recordDecl->isUnion()) {
-                typeString = "union ";
-            }
-
-            std::string parentInfo = typeString + namedDecl->getNameAsString();
-            storeVariableDeclationInfo(childInfo, parentInfo, fileName);
-            childInfo = parentInfo;
-            parentDeclContext = parentDeclContext->getParent();
-            continue;
-        } else if(clang::isa<clang::NamespaceDecl>(parentDeclContext)) {
-            // Get namespace information
-            clang::NamespaceDecl* namespaceDecl = clang::dyn_cast<clang::NamespaceDecl>(parentDeclContext);
-            const std::string namespaceName = clang::dyn_cast_or_null<clang::NamedDecl>(parentDeclContext)->getNameAsString();
-            std::string parentInfo = "namespace " + namespaceName;
-            storeVariableDeclationInfo(childInfo, parentInfo, fileName);
-            childInfo = parentInfo;
-            parentDeclContext = parentDeclContext->getParent();
-            continue;
-        } else {
-            // Last node in the hierachy
-            storeVariableDeclationInfo(childInfo, {}, fileName, true /*final entry, no parent*/);
-            return;
-        }
-    }
-}
-
-void CustomASTVisitor::storeVariableDeclationInfo(const std::string& childInfo, const std::string& parentInfo, const std::string& fileName, const bool finalEntry) {
-    logFile << "INFO: Storing variable, child: " << childInfo << " parent " << parentInfo << std::endl;
-
-    std::string parentInfoLocal = parentInfo;
-    std::string childInfoLocal = childInfo;
-
-    bool childPresent = false;
-
-    // Set might have child information already, so traverse to find out the element and only update parent link
-    if(m_variableInfo.size()) {
-        for(auto& eachElement : m_variableInfo) {
-            if(eachElement == childInfoLocal) {
-                if(finalEntry) {
-                    break; // nothing to update
-                }
-                childPresent = true;
-                break;
-            }
-        }
-    }
-
-    if(parentInfo == "") {// Probably last entry
-        if(m_variableInfo.size()) {
-            const std::vector<std::string> varInfoList(m_variableInfo.begin(), m_variableInfo.end());
-            storeListInfoContainer(fileName, varInfoList);
-        } else { // Only child present and no parent
-            std::vector<std::string> varInfoList = {childInfo};
-            storeListInfoContainer(fileName, varInfoList); // Organize this
-        }
-        // Flush out m_variableInfo
-        m_variableInfo.clear();
-        return;
-    }
-
-    if(! childPresent) {
-        // Push child first then parent
-        m_variableInfo.push_front(childInfo);
-        m_variableInfo.push_front(parentInfo);
-    } else {
-        m_variableInfo.push_front(parentInfoLocal);
-    }
-}
-
-void CustomASTVisitor::storeListInfoContainerCore(const std::vector<std::string>& varInfoList, 
-                          VariableInfoHierarchy& container, const bool newEntry) {
-
-    VariableInfoHierarchy* current = &container;
-    bool firstRecordInVarInfoList = true;
-    bool firstEntry = true;
-
-    // Example use case:
-    // varInfoList:
-    // namespace foo {
-    //     struct bar {
-    //         int x;
-    //     };
-    //     ...
-    //}
-    // container:
-    // namespace foo -> struct bar
-
-    for (size_t i = 0; i < varInfoList.size(); ++i) {
-        bool found = false;
-        // Check container data against first record of varInfoList (namespace foo -> namespace foo)
-        if(firstRecordInVarInfoList) {
-            if(container.variableInfo == varInfoList[i]) {
-                current = &container;
-                found = true;
-            }
-            firstRecordInVarInfoList = false;
-        } else {
-            // For remaining records (struct bar -> struct bar, ...)
-            for (auto& child : current->variableInfoHierarchyList) {
-                if (child.variableInfo == varInfoList[i]) {
-                    current = &child;
-                    found = true;
-                    break;
-                } else {
-                  continue;
-                }
-            }
-        }
-
-        if (! found) {
-            // Add variable info to current branch as current branch is newly created and not present yet in container
-            // Later storeListInfoContainer will add current branch into container
-            if(firstEntry && newEntry) {
-                current->variableInfo = varInfoList[i];
-                firstEntry = false;
-            } else {
-                // Here current branch is already present in container, So only
-                // insert the missing part of the sequence starting from here
-                VariableInfoHierarchy insertVarInfo = {};
-                insertVarInfo.variableInfo = varInfoList[i];
-                current->variableInfoHierarchyList.push_back(insertVarInfo);
-                current = &current->variableInfoHierarchyList.back();
-            }
-        }
-    }
-}
-
-void CustomASTVisitor::storeListInfoContainer(const std::string& fileName, const std::vector<std::string>& varInfoList) {
-    // Check for any matches in existing container map
-    // If file entry not exists, create one
-    if(! m_variableInfoContainerMap.count(fileName)) {
-         m_variableInfoContainerMap[fileName] = {};
-         VariableInfoHierarchy newEntryInContainer;
-         storeListInfoContainerCore(varInfoList, newEntryInContainer, true/*new entry*/);
-         m_variableInfoContainerMap[fileName].push_back(newEntryInContainer);
-    } else {
-        // File entry is present in map
-        // Check if parent node is already present or not
-        for(auto& each : m_variableInfoContainerMap[fileName]) {
-            if(varInfoList.size() && (each.variableInfo == *varInfoList.begin())) {
-                // Parent node already exists, pass this
-                storeListInfoContainerCore(varInfoList, each);
-                return;
-            } else {
-                continue;
-            }
-        }
-
-        // Parent node not exists, create one and append in the list
-        VariableInfoHierarchy newEntryInContainer;
-        storeListInfoContainerCore(varInfoList, newEntryInContainer, true/*new entry*/);
-        m_variableInfoContainerMap[fileName].push_back(newEntryInContainer);
-    }
+    // Now parse parent information of this method
+    clang::DeclContext* parentDeclContext = methodDecl->getParent();
+    processDeclContextHierarchy(parentDeclContext, currentFileName, false, methodInfo);
 }
 
 // Workaround to convert _Bool to bool
@@ -722,35 +498,6 @@ std::string CustomASTVisitor::checkBool(const std::string typeName) {
         return "bool";
     }
     return typeName;
-}
-
-void CustomASTVisitor::storeIncludeInformation(clang::Type* type, const std::string fileName) {
-    std::optional<std::string> includeFileName = getFileNameFromTypeDeclaration(type);
-    if(includeFileName.has_value()) {
-        if(! m_includes.count(fileName)) { // First include in the file
-            m_includes[fileName] = {};
-        }
-
-        // @Note: It appears that there is no straightforward method to determine the precise C++ standard
-        // header file usually used corresponding to each standard declaration
-        // Example: std::string -> /usr/include/c++/string
-        // So workaround has been added to include below std file to cover any std file
-        if(std::string::npos != includeFileName.value().find("c++/")) {
-            // Change the include filename to <bits/stdc++.h>
-            includeFileName.value() = "bits/stdc++.h";
-        }
-
-        // Is include file already noted
-        bool found = false;
-        for(const auto includeFile : m_includes.at(fileName)) {
-            if(includeFile == includeFileName.value()) {
-                found = true;
-            }
-        }
-        if(! found) {
-            m_includes.at(fileName).push_back(includeFileName.value());
-        }
-    }
 }
 
 // Returns fileName where the given type is defined
@@ -841,7 +588,7 @@ std::optional<std::string> CustomASTVisitor::getFileNameFromTypeDeclaration(clan
     return getStrippedFilePath(m_sourceManager.getFilename(tagType->getDecl()->getLocation()).data());
 }
 
-clang::DeclContext* CustomASTVisitor::getParentOfType(clang::Type* type) {
+clang::DeclContext* CustomASTVisitor::getDeclContextFromType(clang::Type* type) {
     if(! type) {
         logFile << "WARN: Type is empty, Unable to process. Skipping" << std::endl;
         return nullptr;
@@ -890,9 +637,168 @@ clang::DeclContext* CustomASTVisitor::getParentOfType(clang::Type* type) {
         logFile << "WARN: Unable to get declaration from tag type" << std::endl;
         return nullptr;
     }
+    
 
     // Return parent information
-    return tagType->getDecl()->getParent();
+    return tagType->getDecl()->getDeclContext();
+}
+
+clang::TagDecl* CustomASTVisitor::getDeclFromType(const clang::Type* type) {
+    if(! type) {
+        logFile << "WARN: Type is empty, Unable to process. Skipping" << std::endl;
+        return nullptr;
+    }
+    if(type->isBuiltinType()) {
+        logFile << "INFO: Build in type found, Skipping" << std::endl;
+        return nullptr;
+    }
+
+    // Type could be pointer, reference or pure type
+    // Below code unwraps pointer and reference type to pure type
+    const clang::Type* typePtr = type;
+
+    if(type->isReferenceType()) {
+        const clang::ReferenceType* referType = type->getAs<clang::ReferenceType>();
+        if(! referType) {
+            logFile << "WARN: Unable to get reference type from type" << std::endl;
+            return nullptr;
+        }
+        typePtr = const_cast<clang::Type*>(referType->getPointeeType().getTypePtr());
+        if(! typePtr) {
+            logFile << "WARN: Unable to get type pointer from pointee type" << std::endl;
+            return nullptr;
+        }
+    } else if (type->isPointerType()) {
+        const clang::PointerType* pointerType = type->getAs<clang::PointerType>();
+        if(! pointerType) {
+            logFile << "WARN: Unable to get pointer type from type" << std::endl;
+            return nullptr;
+        }
+        typePtr = const_cast<clang::Type*>(pointerType->getPointeeType().getTypePtr());
+        if(! typePtr) {
+            logFile << "WARN: Unable to get type pointer from pointee type" << std::endl;
+            return nullptr;
+        }
+    }
+
+    // Finally get declaration tagged with type
+    const clang::TagType* tagType = typePtr->getAs<clang::TagType>();
+    if(! tagType) {
+        logFile << "WARN: Unable to get tag type from type pointer" << std::endl;
+        logFile << "WARN: Is in build type: " << typePtr->isBuiltinType() << std::endl;
+        return nullptr;
+    }
+    if(! tagType->getDecl()) {
+        logFile << "WARN: Unable to get declaration from tag type" << std::endl;
+        return nullptr;
+    }
+
+    // Return parent information
+    return tagType->getDecl();
+}
+
+// Parse given declaration context and fill appropriate data in declData.
+// This function will parse the declaration and determine whether the declaration 
+// context is a Namespace or a Class/Struct/Union
+bool CustomASTVisitor::processDeclContextInfo(const clang::DeclContext* declContext, MockInfoStorageType& declData, std::string* storeFileName) noexcept {
+    if(! declContext) {
+        return false;
+    }
+
+    // Check parent is of any MockInfoStorageType type
+    if(clang::isa<clang::NamespaceDecl>(declContext)) {
+        const std::string namespaceName = clang::dyn_cast_or_null<clang::NamedDecl>(declContext)->getNameAsString();
+        logFile << "INFO: processDeclContextInfo: namespace found: " << namespaceName << std::endl;
+        declData = NamespaceInfo{namespaceName};
+        return true;
+    } else if(clang::isa<clang::RecordDecl>(declContext) || clang::isa<clang::CXXRecordDecl>(declContext)) {
+        const clang::NamedDecl* namedDecl = clang::dyn_cast_or_null<clang::NamedDecl>(declContext);
+        const clang::RecordDecl* recordDecl = clang::dyn_cast<clang::RecordDecl>(declContext);
+        std::string typeString = {};
+        if(recordDecl->isStruct()) {
+            typeString = "struct ";
+        } else if(recordDecl->isClass()) {
+            typeString = "class ";
+        } else if(recordDecl->isUnion()) {
+            typeString = "union ";
+        }
+        
+        ClassStructUnionInfo info = {};
+        info.declKindName = typeString;
+        info.name = namedDecl->getNameAsString();
+        auto* parentCXXRecordDecl = llvm::dyn_cast<clang::CXXRecordDecl>(declContext);
+        if(parentCXXRecordDecl) {
+            // Check if the class is template class
+            if(parentCXXRecordDecl->getTemplateInstantiationPattern()) {
+                if(! parentCXXRecordDecl->getTemplateInstantiationPattern()) {
+                    logFile << "WARN: Unable to get Template instantiation pattern of CXXRecordDecl" << std::endl;
+                    return false;
+                }
+                if(! parentCXXRecordDecl->getTemplateInstantiationPattern()->getDescribedClassTemplate()) {
+                    logFile << "WARN: Unable to get Described Class Template from CXXRecordDecl" << std::endl;
+                    return false;
+                }
+                if(! parentCXXRecordDecl->getTemplateInstantiationPattern()->getDescribedClassTemplate()->getTemplateParameters()) {
+                    logFile << "WARN: Unable to get Template parameter list from ClassTempDecl" << std::endl;
+                    return false;
+                }
+                clang::TemplateParameterList* templateParamList = parentCXXRecordDecl->getTemplateInstantiationPattern()->getDescribedClassTemplate()->getTemplateParameters();
+                std::vector<std::string> tempParamList;
+                for(int i=0; i<templateParamList->size(); i++) {
+                    tempParamList.push_back(templateParamList->getParam(i)->getNameAsString());
+                }
+        
+                info.isTemplateClass = true;
+                info.templateParams = tempParamList;
+            }
+        }
+        info.filename = getfileNameFromPath(m_sourceManager.getFilename(parentCXXRecordDecl->getLocation()));
+        if(storeFileName) {
+            *storeFileName = info.filename;
+        }
+        declData = info;
+        return true;
+    }
+
+    return false;
+}
+
+// Parse given declaration context and parent hierarchy as well
+// Example:
+// Namespace Foo {
+//   class Bar {
+//   }
+// }
+// Incase Bar context is passed, this function would parse Bar and Foo information
+void CustomASTVisitor::processDeclContextHierarchy(const clang::DeclContext* declContext, const std::string& fileName,
+                       bool storeIncludeFileName, std::optional<MockInfoStorageType> appendMockData) noexcept {
+    if(! declContext) {
+        logFile << "WARN: Invalid DeclContext received, not processing" << std::endl;
+        return;
+    }
+
+    MockInfoStorageType mockInfo = {};
+    std::list<MockInfoStorageType> mockInfoList = {};
+    if(appendMockData.has_value()) {
+        mockInfoList.push_back(appendMockData.value());
+    }
+    while(declContext) {
+        std::string includeFileName = {};
+        if(processDeclContextInfo(declContext, mockInfo, storeIncludeFileName ? &includeFileName : nullptr)) {
+            mockInfoList.push_front(mockInfo);
+            declContext = declContext->getParent();
+            if(!includeFileName.empty()) {
+                storeIncludeInformation(fileName, includeFileName);
+            }
+        } else {
+            break; // Nothing to parse anymore
+        }
+    }
+
+    resetCurrentStorageNode(fileName);
+    for(auto eachNode : mockInfoList) {
+        storeMockData(fileName, eachNode);
+    }
 }
 
 // Utility function to remove "/usr/include"
@@ -908,29 +814,14 @@ std::string CustomASTVisitor::getStrippedFilePath(const std::string fullPath) {
     return fullPath.substr(fullPath.find("/usr/include/") + 13); // 13 - Strip /usr/include/
 }
 
-// Used only for enum types
-std::string CustomASTVisitor::getEnumNameFromFullyQualifiedEnumName(const std::string& memberType) {
-    auto position = memberType.find("::");
-    if(std::string::npos == position) {
-        return memberType;
-    }
-
-    std::size_t lastPostion;
-    while(std::string::npos != position) {
-        lastPostion = position;
-        position = memberType.find("::", position+2);
-    }
-
-    return memberType.substr((lastPostion+2), (memberType.size()-(lastPostion+2)));
-}
-
 bool CustomASTVisitor::isStdNamespace(const std::string namespaceInfo) {
     return (std::string::npos == namespaceInfo.find("std::")) ? false : true;
 }
 
 // Mock or not to Mock is decided based on the file
 // Once file is choosen to not mock, Then content of that file will not be mocked in further findings
-bool CustomASTVisitor::fileContentToBeMocked(const std::string& fileName, const std::string& className) {
+// Make sure to use only filename alone or with full path. Don't mix both
+bool CustomASTVisitor::fileContentToBeMocked(const std::string& fileName, const std::string& helperIdentifier) {
 
     // include/c++/7.5.0 => c++ std files
     // Already user confirmed files
@@ -956,7 +847,7 @@ bool CustomASTVisitor::fileContentToBeMocked(const std::string& fileName, const 
     }
 
     // New file found, Ask user
-    logFile << "INFO: To be mocked? fileName: " << fileName << ", className: " << className << "" << std::endl;
+    logFile << "INFO: To be mocked? fileName: " << fileName << ", element: " << helperIdentifier << "" << std::endl;
     std::string input = "y";
     if(askUserConfirmation) {
         static bool askOnce = false;
@@ -965,7 +856,7 @@ bool CustomASTVisitor::fileContentToBeMocked(const std::string& fileName, const 
             std::cout << "\n\33[1;43mBelow are the list of files identified as dependencies to your source file\033[0m\n";
             std::cout << "\33[1;43mSo press \"y\" if you want to mock the file content, \"n\" otherwise\033[0m\n" << std::endl;
         }
-        std::cout << "\33[1m" <<fileName << "(" << className << "): \033[0m";
+        std::cout << "\33[1m" <<fileName << "(" << helperIdentifier << "): \033[0m";
         std::cin >> input;
         std::cout << std::endl;
     }
@@ -998,6 +889,153 @@ std::string CustomASTVisitor::getTypeNameFromQualifiedTypeName(const std::string
     return firstWord + " " + actualTypeName;
 }
 
-const std::map<std::string/*fileName*/, std::list<VariableInfoHierarchy>>& CustomASTVisitor::getVariableInfoContainer() {
-    return m_variableInfoContainerMap;
+void CustomASTVisitor::storeIncludeInformation(clang::Type* type, const std::string fileName) {
+    std::optional<std::string> includeFileName = getFileNameFromTypeDeclaration(type);
+    if(includeFileName.has_value()) {
+        if(! m_includes.count(fileName)) { // First include in the file
+            m_includes[fileName] = {};
+        }
+
+        // @Note: It appears that there is no straightforward method to determine the precise C++ standard
+        // header file usually used corresponding to each standard declaration
+        // Example: std::string -> /usr/include/c++/string
+        // So workaround has been added to include below std file to cover any std file
+        if(std::string::npos != includeFileName.value().find("c++/")) {
+            // Change the include filename to <bits/stdc++.h>
+            includeFileName.value() = "bits/stdc++.h";
+        }
+
+        // Is include file already noted
+        bool found = false;
+        for(const auto includeFile : m_includes.at(fileName)) {
+            if(includeFile == includeFileName.value()) {
+                found = true;
+            }
+        }
+        if(! found) {
+            m_includes.at(fileName).push_back(includeFileName.value());
+        }
+    }
+}
+
+void CustomASTVisitor::storeIncludeInformation(const std::string& fileName, const std::string& includeFileName) {
+
+    if(! m_includes.count(fileName)) { // First include in the file
+        m_includes[fileName] = {};
+    }
+
+    // @Note: It appears that there is no straightforward method to determine the precise C++ standard
+    // header file usually used corresponding to each standard declaration
+    // Example: std::string -> /usr/include/c++/string
+    // So workaround has been added to include below std file to cover any std file
+    std::string includeFileNameToBeStored = includeFileName;
+    if(std::string::npos != includeFileName.find("c++/")) {
+        // Change the include filename to <bits/stdc++.h>
+        includeFileNameToBeStored = "bits/stdc++.h";
+    }
+    // Is include file already noted
+    bool found = false;
+    for(const auto eachFile : m_includes.at(fileName)) {
+        if(eachFile == includeFileNameToBeStored) {
+            found = true;
+        }
+    }
+    if(! found) {
+        m_includes.at(fileName).push_back(includeFileNameToBeStored);
+    }
+}
+
+// 1. Storage points to first node of mock tree after every resetNode
+// 2. So compare the node and if matches then skip adding new node, otherwise add new node and update current node
+void CustomASTVisitor::storeMockData(const std::string& fileName, MockInfoStorageType mockData) noexcept {
+
+    // First entry for the file, add it right away
+    if(! m_mockInfoStorage.count(fileName)) {
+        m_mockInfoStorage[fileName].push_back({mockData, {}});
+        m_mockInfoStorageRef = &m_mockInfoStorage.at(fileName).front().childData;
+        return;
+    }
+
+    // File entry has data already
+    // Traverse the node from current node and insert it in the right place
+    bool nodeExist = false;
+    for(MockInfoStorage& eachNode : *m_mockInfoStorageRef) {
+
+        if(eachNode.data.index() == mockData.index()) { // Exact node data type found
+            switch(mockData.index()) {
+                case 0: { // NamespaceInfo
+                    if(std::get<NamespaceInfo>(eachNode.data).namespaceName == std::get<NamespaceInfo>(mockData).namespaceName) {
+                        // Mock data already exists, do nothing
+                        nodeExist = true;
+                    }
+                    break;
+                }
+                case 1: { // ClassStructUnionInfo
+                    if(std::get<ClassStructUnionInfo>(eachNode.data).name == std::get<ClassStructUnionInfo>(mockData).name) {
+                        // Mock data already exists, do nothing
+                        nodeExist = true;
+                    }
+                    break;
+                }
+                case 2: { // EnumInfo
+                    if(std::get<enumProperties>(eachNode.data).enumName == std::get<enumProperties>(mockData).enumName) {
+                        // Mock data already exists, do nothing
+                        nodeExist = true;
+                    }
+                    break;
+                }
+                case 3: { // MethodInfo
+                    if(std::get<MethodInfo>(eachNode.data).name == std::get<MethodInfo>(mockData).name) {
+                        // Check arguments as well
+                        auto storedMethodInfo = std::get<MethodInfo>(eachNode.data);
+                        auto newMethodInfo = std::get<MethodInfo>(mockData);
+                        if((0 == storedMethodInfo.args.size()) && (0 == newMethodInfo.args.size())) {
+                            nodeExist = true;
+                            break;
+                        }
+                        if(storedMethodInfo.args.size() == newMethodInfo.args.size()) {
+                            for(int i=0; i< storedMethodInfo.args.size(); i++) {
+                                if(storedMethodInfo.args[i] == newMethodInfo.args[i]) {
+                                    nodeExist = true;
+                                    continue;
+                                } else {
+                                    nodeExist = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+                case 4: { // FieldDeclInfo
+                    if(std::get<FieldDeclInfo>(eachNode.data).declName == std::get<FieldDeclInfo>(mockData).declName) {
+                        // Mock data already exists, do nothing
+                        nodeExist = true;
+                    }
+                    break;
+                }
+                default: { // This would result undefined behavior
+                    logFile << "WARN: Invalid data index received, index: " << mockData.index() << std::endl;
+                    return;
+                }
+            }
+        }
+        if(nodeExist) {
+            m_mockInfoStorageRef = &(eachNode.childData);
+            break;
+        }
+    }
+
+    // Mock data doesn't exists, store it
+    if(! nodeExist) {
+        m_mockInfoStorageRef->push_back({mockData, {}});
+        // Now set current node to recent entry
+        m_mockInfoStorageRef = &m_mockInfoStorageRef->back().childData;
+    }
+}
+
+void CustomASTVisitor::resetCurrentStorageNode(const std::string& fileName) noexcept {
+    if(m_mockInfoStorage.count(fileName)) {
+        m_mockInfoStorageRef = &m_mockInfoStorage.at(fileName);
+    }
 }

@@ -20,29 +20,13 @@
 
 #include "GMockClassGenerator.hpp"
 
-void GMockClassGenerator::constructIncludes(const std::string& fileName, const std::vector<std::string>& includes) {
-    // constructIncludes() can be called from any generator as it is implemented in GeneratorUtilities
-    m_cppMockgenerator.constructIncludes(fileName, includes);
-}
-
-void GMockClassGenerator::constructEnum(const std::string& fileName, const std::vector<enumProperties>& enumProp) {
-    m_enumGenerator.constructEnum(fileName, enumProp);
-}
-
-void GMockClassGenerator::constructClass(const ClassInfo& classInfo, const std::vector<MethodInfo>& calleeInfo) {
-    m_cppMockgenerator.constructClass(classInfo, calleeInfo);
-}
-
-void GMockClassGenerator::constructCFunction(const std::string& fileName, const std::vector<MethodInfo>& methodsInfo) {
-    m_cMockGenerator.constructFunction(fileName, methodsInfo);
-}
-
-void GMockClassGenerator::constructFieldDeclation(const std::string& fileName, const std::list<VariableInfoHierarchy>& fieldInfo) {
-    m_fieldDeclGenerator.constructFieldDeclaration(fileName, fieldInfo);
+void GMockClassGenerator::constructMockClass(const std::string& fileName, 
+        const std::list<MockInfoStorage>& mockInfoList, const std::list<std::string>& includeList) {
+    m_gmockClassGeneratorImpl.constructMockClass(fileName, mockInfoList, includeList);
 }
 
 void GMockClassGenerator::finalizeMocking() {
     // finishMocking is just adding #endif at end of the file located in ./GeneratedMocks folder.
     // So finishMocking() can be called from any generator objects
-    m_cppMockgenerator.finishMocking();
+    m_gmockClassGeneratorImpl.finishMocking();
 }

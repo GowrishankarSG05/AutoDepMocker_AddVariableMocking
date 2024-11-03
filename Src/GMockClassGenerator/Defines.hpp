@@ -27,7 +27,7 @@ namespace PredefinedMockData {
 const std::string comma = ",";
 const std::string commaAndSpace = ", ";
 const std::string semicolon = ";";
-const std::string initialization = " = {}";
+const std::string initialization = " = {};";
 const std::string aSpace= " ";
 const std::string tab = "    ";
 const std::string openParentheses = "(";
@@ -61,6 +61,7 @@ const std::string template_ = "template ";
 const std::string typename_ = "typename ";
 const std::string enum_ = "enum ";
 const std::string scopedEnum_ = "enum class ";
+const std::string wrapperClassForCFunctions = "_WrapperClassForCFunctions";
 }
 
 #endif // DEFINES_HPP_
